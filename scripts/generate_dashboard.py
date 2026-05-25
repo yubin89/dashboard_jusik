@@ -870,6 +870,11 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
     long_s  = scores["long"]
 
     # ── 탭 1: 거시경제 카드 생성 ──────────────────────────────────────────────
+    TOOLTIP_RSI  = "과매수/과매도 측정 (0~100). 30↓ 과매도(매수신호), 70↑ 과매수(매도신호). 14일 기준"
+    TOOLTIP_MACD = "단기(12일) - 장기(26일) 이동평균 차이. Signal선(9일) 상향 돌파 시 매수신호"
+    TOOLTIP_BB   = "20일 평균 ± 2표준편차. 하단 터치는 통계적 과매도, 상단 터치는 과매수 구간"
+    TOOLTIP_MA   = "50일선이 200일선을 상향 돌파 = 골든크로스(강세), 하향 = 데드크로스(약세)"
+
     def macro_card(title, value, sub="", signal="neutral"):
         sig_colors = {"green": "#4caf50", "yellow": "#ffeb3b", "orange": "#ff9800", "red": "#f44336", "neutral": "#9e9e9e"}
         border_c = sig_colors.get(signal, "#9e9e9e")
@@ -1018,11 +1023,6 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
         for item in items:
             html_sectors += sector_stock_card(item, short_warn=short_s["score"] <= 30)
         html_sectors += "</div>"
-
-    TOOLTIP_RSI  = "과매수/과매도 측정 (0~100). 30↓ 과매도(매수신호), 70↑ 과매수(매도신호). 14일 기준"
-    TOOLTIP_MACD = "단기(12일) - 장기(26일) 이동평균 차이. Signal선(9일) 상향 돌파 시 매수신호"
-    TOOLTIP_BB   = "20일 평균 ± 2표준편차. 하단 터치는 통계적 과매도, 상단 터치는 과매수 구간"
-    TOOLTIP_MA   = "50일선이 200일선을 상향 돌파 = 골든크로스(강세), 하향 = 데드크로스(약세)"
 
     # ── 탭 3: 미국 단타 카드 ─────────────────────────────────────────────────
     def us_scalp_card(item: dict) -> str:
