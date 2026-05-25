@@ -271,17 +271,34 @@ def collect_macro() -> dict:
         print(f"[VIX] 오류: {e}")
         m["vix"] = None
 
-    # 공포탐욕지수
+    # 공포탐욕지수 (CNN 1차 → alternative.me 백업)
     try:
-        r = requests.get(
+        score, rating = None, None
+        # 1차: CNN (URL 2가지 시도)
+        cnn_urls = [
             "https://production.dataviz.cnn.io/index/fearandgreed/graphdata",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10
-        )
-        r.raise_for_status()
-        fg_data = r.json()
-        score = fg_data["fear_and_greed"]["score"]
-        rating = fg_data["fear_and_greed"]["rating"]
+            f"https://production.dataviz.cnn.io/index/fearandgreed/graphdata/{datetime.date.today().isoformat()}",
+        ]
+        for url in cnn_urls:
+            try:
+                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+                r.raise_for_status()
+                fd = r.json()
+                fg = fd.get("fear_and_greed") or fd
+                score = fg.get("score") or fg.get("now", {}).get("score")
+                rating = fg.get("rating") or fg.get("now", {}).get("text", "")
+                if score is not None:
+                    break
+            except Exception:
+                continue
+        # 2차 백업: alternative.me
+        if score is None:
+            r2 = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
+            r2.raise_for_status()
+            fng = r2.json()["data"][0]
+            score = float(fng["value"])
+            rating = fng["value_classification"]
+            print(f"[공포탐욕] alternative.me 백업 사용: {score}")
         m["fear_greed"] = {"score": round(float(score), 1), "rating": rating}
     except Exception as e:
         print(f"[공포탐욕] 오류: {e}")
@@ -595,8 +612,12 @@ US_SECTORS = {
     "소프트웨어·AI": ["MSFT", "PLTR", "CDNS"],
 }
 US_SCALP   = ["NVDA", "TSLA", "SOFI", "MARA"]
-KR_SCALP   = ["086520", "068270", "035720"]
-KR_NAMES   = {"086520": "에코프로", "068270": "셀트리온", "035720": "카카오"}
+US_SCALP_NAMES = {"NVDA": "엔비디아", "TSLA": "테슬라", "SOFI": "소파이", "MARA": "마라홀딩스"}
+KR_SCALP   = ["086520", "068270", "035720", "058470", "000720"]
+KR_NAMES   = {
+    "086520": "에코프로", "068270": "셀트리온", "035720": "카카오",
+    "058470": "리노공업", "000720": "현대건설",
+}
 
 
 def fetch_earnings_info(ticker: str) -> dict:
@@ -975,11 +996,11 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
           <div style="font-size:22px;font-weight:700">${fmt(price,2)}</div>
           <div style="margin:4px 0">{change_span(chg)}</div>
           <hr style="border-color:#333;margin:8px 0">
-          <div class="stock-row"><span>RSI(14)</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}</span></div>
-          <div class="stock-row"><span>MACD</span><span>{macd_sig_txt}</span></div>
-          <div class="stock-row"><span>볼린저밴드 위치</span><span>{bb_txt}</span></div>
-          <div class="stock-row"><span>MA 크로스</span><span style="color:{cross_color}">{cross}</span></div>
-          <div class="stock-row"><span>200MA 대비</span><span style="color:{vs200_color}">{vs200}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_RSI}" style="cursor:help;border-bottom:1px dotted #666">RSI(14) ℹ</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_MACD}" style="cursor:help;border-bottom:1px dotted #666">MACD ℹ</span><span>{macd_sig_txt}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_BB}" style="cursor:help;border-bottom:1px dotted #666">볼린저밴드 위치 ℹ</span><span>{bb_txt}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_MA}" style="cursor:help;border-bottom:1px dotted #666">MA 크로스 ℹ</span><span style="color:{cross_color}">{cross}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_MA}" style="cursor:help;border-bottom:1px dotted #666">200MA 대비 ℹ</span><span style="color:{vs200_color}">{vs200}</span></div>
           <hr style="border-color:#333;margin:8px 0">
           <div class="stock-row"><span>매수선</span><span style="color:#4caf50">${fmt(buy,2)}</span></div>
           <div class="stock-row"><span>매도선</span><span style="color:#f44336">${fmt(sell,2)}</span></div>
@@ -998,9 +1019,15 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
             html_sectors += sector_stock_card(item, short_warn=short_s["score"] <= 30)
         html_sectors += "</div>"
 
+    TOOLTIP_RSI  = "과매수/과매도 측정 (0~100). 30↓ 과매도(매수신호), 70↑ 과매수(매도신호). 14일 기준"
+    TOOLTIP_MACD = "단기(12일) - 장기(26일) 이동평균 차이. Signal선(9일) 상향 돌파 시 매수신호"
+    TOOLTIP_BB   = "20일 평균 ± 2표준편차. 하단 터치는 통계적 과매도, 상단 터치는 과매수 구간"
+    TOOLTIP_MA   = "50일선이 200일선을 상향 돌파 = 골든크로스(강세), 하향 = 데드크로스(약세)"
+
     # ── 탭 3: 미국 단타 카드 ─────────────────────────────────────────────────
     def us_scalp_card(item: dict) -> str:
         tk     = item.get("ticker","")
+        kr_name = US_SCALP_NAMES.get(tk, "")
         price  = item.get("price")
         chg    = item.get("change_pct")
         rsi    = item.get("rsi")
@@ -1028,14 +1055,15 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
         return f"""
         <div class="stock-card">
           {badge}
-          <div style="font-size:20px;font-weight:700;margin-bottom:4px">{tk}</div>
+          <div style="font-size:20px;font-weight:700;margin-bottom:2px">{tk}</div>
+          <div style="color:#9e9e9e;font-size:13px;margin-bottom:4px">{kr_name}</div>
           <div style="font-size:22px;font-weight:700">${fmt(price,2)}</div>
           <div style="margin:4px 0">{change_span(chg)}</div>
           <hr style="border-color:#333;margin:8px 0">
-          <div class="stock-row"><span>RSI(14)</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}{rsi_label}</span></div>
-          <div class="stock-row"><span>MACD 골든크로스</span><span style="color:{'#4caf50' if macd_gc else '#f44336'}">{'✓ 발생' if macd_gc else '미발생'}</span></div>
-          <div class="stock-row"><span>볼린저 하단 터치</span><span style="color:{'#4caf50' if bb_touch else '#ccc'}">{'✓ 터치' if bb_touch else '미터치'}</span></div>
-          <div class="stock-row"><span>200MA 대비</span><span style="color:{vs200_color}">{vs200}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_RSI}" style="cursor:help;border-bottom:1px dotted #666">RSI(14) ℹ</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}{rsi_label}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_MACD}" style="cursor:help;border-bottom:1px dotted #666">MACD 골든크로스 ℹ</span><span style="color:{'#4caf50' if macd_gc else '#f44336'}">{'✓ 발생' if macd_gc else '미발생'}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_BB}" style="cursor:help;border-bottom:1px dotted #666">볼린저 하단 터치 ℹ</span><span style="color:{'#4caf50' if bb_touch else '#ccc'}">{'✓ 터치' if bb_touch else '미터치'}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_MA}" style="cursor:help;border-bottom:1px dotted #666">200MA 대비 ℹ</span><span style="color:{vs200_color}">{vs200}</span></div>
           <div class="stock-row"><span>거래량 비율</span><span style="color:{'#ff9800' if vol_surge else '#ccc'}">{fmt(vol,2,"x")}{' 🔥급증' if vol_surge else ''}</span></div>
           <hr style="border-color:#333;margin:8px 0">
           <div class="stock-row"><span>매수선</span><span style="color:#4caf50">${fmt(buy,2)}</span></div>
@@ -1089,10 +1117,10 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
           <div style="font-size:22px;font-weight:700">{price_fmt}</div>
           <div style="margin:4px 0">{change_span(chg)}</div>
           <hr style="border-color:#333;margin:8px 0">
-          <div class="stock-row"><span>RSI(14)</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}{rsi_label}</span></div>
-          <div class="stock-row"><span>MACD 골든크로스</span><span style="color:{'#4caf50' if macd_gc else '#f44336'}">{'✓ 발생' if macd_gc else '미발생'}</span></div>
-          <div class="stock-row"><span>볼린저 하단 터치</span><span style="color:{'#4caf50' if bb_touch else '#ccc'}">{'✓ 터치' if bb_touch else '미터치'}</span></div>
-          <div class="stock-row"><span>200MA 대비</span><span style="color:{vs200_color}">{vs200}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_RSI}" style="cursor:help;border-bottom:1px dotted #666">RSI(14) ℹ</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}{rsi_label}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_MACD}" style="cursor:help;border-bottom:1px dotted #666">MACD 골든크로스 ℹ</span><span style="color:{'#4caf50' if macd_gc else '#f44336'}">{'✓ 발생' if macd_gc else '미발생'}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_BB}" style="cursor:help;border-bottom:1px dotted #666">볼린저 하단 터치 ℹ</span><span style="color:{'#4caf50' if bb_touch else '#ccc'}">{'✓ 터치' if bb_touch else '미터치'}</span></div>
+          <div class="stock-row"><span title="{TOOLTIP_MA}" style="cursor:help;border-bottom:1px dotted #666">200MA 대비 ℹ</span><span style="color:{vs200_color}">{vs200}</span></div>
           <div class="stock-row"><span>거래량 비율</span><span style="color:{'#ff9800' if vol_surge else '#ccc'}">{fmt(vol,2,"x")}{' 🔥급증' if vol_surge else ''}</span></div>
           <div class="stock-row"><span>기관 3일 순매수</span><span style="color:{'#4caf50' if inst else '#ccc'}">{'✓ 3일 연속' if inst else '아니오'}</span></div>
           <div class="stock-row"><span>외국인 3일 순매수</span><span style="color:{'#4caf50' if for_ else '#ccc'}">{'✓ 3일 연속' if for_ else '아니오'}</span></div>
