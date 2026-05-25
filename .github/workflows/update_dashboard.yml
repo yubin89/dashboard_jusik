@@ -1,0 +1,43 @@
+name: Update Dashboard
+
+on:
+  schedule:
+    - cron: '0 22 * * *'  # UTC 22:00 = KST 07:00
+  workflow_dispatch:       # 수동 실행 허용
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install yfinance fredapi requests pandas pandas-ta pykrx anthropic
+
+      - name: Generate dashboard
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/generate_dashboard.py
+
+      - name: Commit and push index.html
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git diff --staged --quiet || git commit -m "dashboard: auto-update $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push origin main
