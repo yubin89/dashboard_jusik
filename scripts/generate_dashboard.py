@@ -601,60 +601,65 @@ KR_NAMES   = {"086520": "에코프로", "068270": "셀트리온", "035720": "카
 
 def fetch_earnings_info(ticker: str) -> dict:
     """다음 실적발표일, EPS 서프라이즈 정보"""
-    info = {}
+    info = {
+        "next_earnings": None, "earnings_soon": False,
+        "eps_actual": None, "eps_estimate": None,
+        "eps_surprise_pct": None, "target_price": None,
+    }
     try:
         t = yf.Ticker(ticker)
-        cal = t.calendar
-        if cal is not None and not cal.empty:
-            if "Earnings Date" in cal.index:
-                ed = cal.loc["Earnings Date"]
-                if hasattr(ed, "iloc"):
-                    next_date = pd.Timestamp(ed.iloc[0]).date()
-                else:
-                    next_date = pd.Timestamp(ed).date()
-                info["next_earnings"] = str(next_date)
-                days_until = (next_date - datetime.date.today()).days
-                info["earnings_soon"] = 0 <= days_until <= 7
-            else:
-                info["next_earnings"] = None
-                info["earnings_soon"] = False
-        else:
-            info["next_earnings"] = None
-            info["earnings_soon"] = False
 
-        # EPS 서프라이즈
-        earnings = t.earnings_history
-        if earnings is not None and not earnings.empty:
-            last = earnings.iloc[-1]
-            eps_actual   = last.get("epsActual", None)
-            eps_estimate = last.get("epsEstimate", None)
-            info["eps_actual"]    = float(eps_actual)   if eps_actual   is not None else None
-            info["eps_estimate"]  = float(eps_estimate) if eps_estimate is not None else None
+        # 캘린더 — 최신 yfinance는 dict 반환
+        try:
+            cal = t.calendar
+            next_date = None
+            if isinstance(cal, dict):
+                ed = cal.get("Earnings Date", None)
+                if ed is not None:
+                    if isinstance(ed, (list, tuple)) and len(ed) > 0:
+                        next_date = pd.Timestamp(ed[0]).date()
+                    elif not isinstance(ed, (list, tuple)):
+                        next_date = pd.Timestamp(ed).date()
+            elif cal is not None and hasattr(cal, "empty") and not cal.empty:
+                if "Earnings Date" in cal.index:
+                    ed = cal.loc["Earnings Date"]
+                    next_date = pd.Timestamp(ed.iloc[0] if hasattr(ed, "iloc") else ed).date()
+            if next_date:
+                info["next_earnings"] = str(next_date)
+                info["earnings_soon"] = 0 <= (next_date - datetime.date.today()).days <= 7
+        except Exception as e:
+            print(f"[캘린더] {ticker}: {e}")
+
+        # EPS 히스토리
+        try:
+            earnings = t.earnings_history
+            eps_actual = eps_estimate = None
+            if earnings is not None:
+                if hasattr(earnings, "empty") and not earnings.empty:
+                    last = earnings.iloc[-1]
+                    eps_actual   = last.get("epsActual",   None)
+                    eps_estimate = last.get("epsEstimate", None)
+                elif isinstance(earnings, list) and earnings:
+                    last = earnings[-1]
+                    eps_actual   = last.get("epsActual",   None)
+                    eps_estimate = last.get("epsEstimate", None)
+            info["eps_actual"]   = float(eps_actual)   if eps_actual   is not None else None
+            info["eps_estimate"] = float(eps_estimate) if eps_estimate is not None else None
             if eps_actual and eps_estimate and eps_estimate != 0:
-                surprise_pct = (eps_actual - eps_estimate) / abs(eps_estimate) * 100
-                info["eps_surprise_pct"] = round(surprise_pct, 1)
-            else:
-                info["eps_surprise_pct"] = None
-        else:
-            info["eps_actual"] = None
-            info["eps_estimate"] = None
-            info["eps_surprise_pct"] = None
+                info["eps_surprise_pct"] = round((eps_actual - eps_estimate) / abs(eps_estimate) * 100, 1)
+        except Exception as e:
+            print(f"[EPS] {ticker}: {e}")
 
         # 애널리스트 목표주가
-        rec = t.analyst_price_targets
-        if rec is not None and hasattr(rec, "get"):
-            info["target_price"] = rec.get("mean", None)
-        else:
-            info["target_price"] = None
+        try:
+            rec = t.analyst_price_targets
+            if isinstance(rec, dict):
+                info["target_price"] = rec.get("mean", None)
+        except Exception as e:
+            print(f"[목표주가] {ticker}: {e}")
 
     except Exception as e:
-        print(f"[실적정보] {ticker} 오류: {e}")
-        info.setdefault("next_earnings", None)
-        info.setdefault("earnings_soon", False)
-        info.setdefault("eps_actual", None)
-        info.setdefault("eps_estimate", None)
-        info.setdefault("eps_surprise_pct", None)
-        info.setdefault("target_price", None)
+        print(f"[실적정보] {ticker} 전체 오류: {e}")
 
     return info
 
@@ -990,7 +995,7 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
     for sector_name, items in sectors.items():
         html_sectors += f'<div class="sector-title">{sector_name}</div><div class="card-grid">'
         for item in items:
-            html_sectors += sector_stock_card(item, short_score=short_s["score"] <= 30)
+            html_sectors += sector_stock_card(item, short_warn=short_s["score"] <= 30)
         html_sectors += "</div>"
 
     # ── 탭 3: 미국 단타 카드 ─────────────────────────────────────────────────
