@@ -223,7 +223,8 @@ def full_technical(ticker: str, is_korean: bool = False) -> dict:
         else:
             result["vol_ratio"] = None
 
-        # 기술적 종합 신호
+        # 기술적 종합 신호 (MA200 위 = 필수, 나머지 3조건 중 2개 이상)
+        ma200_ok = bool(ma200 and price > ma200)
         buy_signals = 0
         if result["rsi"] is not None and result["rsi"] < 40:
             buy_signals += 1
@@ -231,15 +232,15 @@ def full_technical(ticker: str, is_korean: bool = False) -> dict:
             buy_signals += 1
         if bb_lower and price <= bb_lower * 1.02:
             buy_signals += 1
-        if ma200 and price > ma200:
-            buy_signals += 1
 
-        if buy_signals >= 3:
+        if ma200_ok and buy_signals >= 2:
             result["tech_signal"] = "매수"
-        elif buy_signals <= 1:
-            result["tech_signal"] = "매도"
-        else:
+        elif ma200_ok and buy_signals == 1:
             result["tech_signal"] = "중립"
+        elif not ma200_ok and buy_signals >= 2:
+            result["tech_signal"] = "중립"
+        else:
+            result["tech_signal"] = "매도"
 
         # 진입 신호 (탭 3·4 용)
         entry_signals = 0
@@ -612,7 +613,15 @@ US_SECTORS = {
     "소프트웨어·AI": ["MSFT", "PLTR", "CDNS"],
 }
 US_SCALP   = ["NVDA", "TSLA", "SOFI", "MARA"]
-US_SCALP_NAMES = {"NVDA": "엔비디아", "TSLA": "테슬라", "SOFI": "소파이", "MARA": "마라홀딩스"}
+US_SCALP_NAMES = {
+    "NVDA": "엔비디아", "TSLA": "테슬라", "SOFI": "소파이", "MARA": "마라홀딩스",
+    "MU": "마이크론", "AMD": "AMD", "SMCI": "슈퍼마이크로", "INTC": "인텔",
+    "QCOM": "퀄컴", "AVGO": "브로드컴", "PLTR": "팔란티어", "COIN": "코인베이스",
+    "RIVN": "리비안", "SQ": "블록", "RBLX": "로블록스", "SHOP": "쇼피파이",
+    "SNOW": "스노우플레이크",
+}
+US_SCALP_WATCHLIST = ["MU", "AMD", "SMCI", "INTC", "QCOM", "AVGO",
+                      "PLTR", "COIN", "RIVN", "SQ", "RBLX", "SHOP", "SNOW"]
 KR_SCALP   = ["086520", "068270", "035720", "058470", "000720", "204320"]
 KR_NAMES   = {
     "086520": "에코프로", "068270": "셀트리온", "035720": "카카오",
@@ -679,6 +688,16 @@ def fetch_earnings_info(ticker: str) -> dict:
         except Exception as e:
             print(f"[목표주가] {ticker}: {e}")
 
+        # PER / PBR
+        try:
+            yi = t.info or {}
+            per = yi.get("trailingPE")
+            pbr = yi.get("priceToBook")
+            info["per"] = float(per) if per is not None else None
+            info["pbr"] = float(pbr) if pbr is not None else None
+        except Exception as e:
+            print(f"[PER/PBR] {ticker}: {e}")
+
     except Exception as e:
         print(f"[실적정보] {ticker} 전체 오류: {e}")
 
@@ -701,10 +720,23 @@ def collect_us_sectors(short_score: int) -> dict:
 
 def collect_us_scalp() -> list:
     result = []
+    fixed_tickers = set(US_SCALP)
     for tk in US_SCALP:
         print(f"  [미국단타] {tk} 수집 중...")
         tech = full_technical(tk)
         result.append(tech)
+    # 동적 스크리닝: 거래량 2.5배↑ 또는 당일 ±5%↑ 종목 자동 추가
+    for tk in US_SCALP_WATCHLIST:
+        if tk in fixed_tickers:
+            continue
+        print(f"  [미국단타 스크리닝] {tk} 확인 중...")
+        tech = full_technical(tk)
+        vol_ratio = tech.get("vol_ratio") or 0
+        chg = abs(tech.get("change_pct") or 0)
+        if vol_ratio >= 2.5 or chg >= 5.0:
+            tech["dynamic"] = True
+            result.append(tech)
+            print(f"  [미국단타 스크리닝] {tk} 자동포착 (거래량{vol_ratio:.1f}x, 변동{chg:.1f}%)")
     return result
 
 
@@ -954,7 +986,12 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
         q = poly.get("question","FOMC")[:30]
         y = poly.get("yes_price","N/A")
         poly_text = f"{y} ({q})"
-    cards_macro += macro_card("Polymarket FOMC", poly_text, "", "neutral")
+    cards_macro += macro_card(
+        "Polymarket FOMC 예측",
+        poly_text,
+        "예측시장: 실제 돈을 걸어 형성되는 FOMC 금리결정 확률",
+        "neutral"
+    )
 
     # ── 탭 2: 섹터 종목 카드 ──────────────────────────────────────────────────
     def sector_stock_card(item: dict, short_warn: bool) -> str:
@@ -977,6 +1014,8 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
         eps_e = item.get("eps_estimate")
         eps_s = item.get("eps_surprise_pct")
         tgt   = item.get("target_price")
+        per   = item.get("per")
+        pbr   = item.get("pbr")
 
         rsi_color = "#4caf50" if rsi and rsi<=30 else ("#f44336" if rsi and rsi>=70 else "#ccc")
         macd_sig_txt = "상승" if (macd and sig and macd>sig) else "하락"
@@ -1001,25 +1040,33 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
           <div style="font-size:22px;font-weight:700">${fmt(price,2)}</div>
           <div style="margin:4px 0">{change_span(chg)}</div>
           <hr style="border-color:#333;margin:8px 0">
-          <div class="stock-row"><span title="{TOOLTIP_RSI}" style="cursor:help;border-bottom:1px dotted #666">RSI(14) ℹ</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}</span></div>
-          <div class="stock-row"><span title="{TOOLTIP_MACD}" style="cursor:help;border-bottom:1px dotted #666">MACD ℹ</span><span>{macd_sig_txt}</span></div>
-          <div class="stock-row"><span title="{TOOLTIP_BB}" style="cursor:help;border-bottom:1px dotted #666">볼린저밴드 위치 ℹ</span><span>{bb_txt}</span></div>
-          <div class="stock-row"><span title="{TOOLTIP_MA}" style="cursor:help;border-bottom:1px dotted #666">MA 크로스 ℹ</span><span style="color:{cross_color}">{cross}</span></div>
-          <div class="stock-row"><span title="{TOOLTIP_MA}" style="cursor:help;border-bottom:1px dotted #666">200MA 대비 ℹ</span><span style="color:{vs200_color}">{vs200}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_RSI}" onclick="showTooltip(this.title)">RSI(14) ℹ</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_MACD}" onclick="showTooltip(this.title)">MACD ℹ</span><span>{macd_sig_txt}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_BB}" onclick="showTooltip(this.title)">볼린저밴드 위치 ℹ</span><span>{bb_txt}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_MA}" onclick="showTooltip(this.title)">MA 크로스 ℹ</span><span style="color:{cross_color}">{cross}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_MA}" onclick="showTooltip(this.title)">200MA 대비 ℹ</span><span style="color:{vs200_color}">{vs200}</span></div>
           <hr style="border-color:#333;margin:8px 0">
           <div class="stock-row"><span>매수선</span><span style="color:#4caf50">${fmt(buy,2)}</span></div>
           <div class="stock-row"><span>매도선</span><span style="color:#f44336">${fmt(sell,2)}</span></div>
           <div class="stock-row"><span>손절선</span><span style="color:#ff9800">${fmt(stop,2)}</span></div>
           <hr style="border-color:#333;margin:8px 0">
           <div class="stock-row"><span>다음 실적</span><span>{earn_str}</span></div>
-          <div class="stock-row small-text"><span>EPS</span><span>{eps_str}</span></div>
+          <div class="stock-row small-text"><span class="tip-lbl" title="직전 실적발표 기준 실제EPS / 예상EPS. yfinance earnings_history 사용" onclick="showTooltip(this.title)">EPS (직전 실적) ℹ</span><span>{eps_str}</span></div>
           <div class="stock-row"><span>목표주가</span><span>${fmt(tgt,2) if tgt else "N/A"}</span></div>
+          <div class="stock-row"><span>PER</span><span>{fmt(per,1) if per else "N/A"}</span></div>
+          <div class="stock-row"><span>PBR</span><span>{fmt(pbr,2) if pbr else "N/A"}</span></div>
           {warn}
         </div>"""
 
-    html_sectors = ""
+    sector_banner = """<div style="background:#1a2744;border-left:4px solid #90caf9;padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:13px;line-height:1.6">
+      ⚡ <b>단기(1~2주) 기술적 신호 기준</b>입니다. RSI·MACD·볼린저밴드·200MA 기반이며 장기 전망과 무관합니다.<br>
+      전력·인프라·반도체가 AI 수혜로 전망이 좋아도, 현재 가격이 200MA 아래거나 과매수면 <b>매도/중립</b>으로 표시됩니다.
+    </div>"""
+    html_sectors = sector_banner
+    html_sectors += """<input id="sector-search" placeholder="종목명 또는 티커 검색..." oninput="filterSectors(this.value)"
+      style="width:100%;padding:10px 14px;background:#1e1e1e;border:1px solid #444;border-radius:8px;color:#e0e0e0;font-size:14px;margin-bottom:16px;box-sizing:border-box">"""
     for sector_name, items in sectors.items():
-        html_sectors += f'<div class="sector-title">{sector_name}</div><div class="card-grid">'
+        html_sectors += f'<div class="sector-title" onclick="toggleSector(this)" style="cursor:pointer">{sector_name} <span class="sector-toggle">▼</span></div><div class="card-grid">'
         for item in items:
             html_sectors += sector_stock_card(item, short_warn=short_s["score"] <= 30)
         html_sectors += "</div>"
@@ -1048,8 +1095,11 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
         vol_surge = vol is not None and vol >= 2.0
         vs200_color = "#4caf50" if vs200=="위" else "#f44336"
 
+        is_dynamic = item.get("dynamic", False)
         badge = ""
-        if esig >= 3:
+        if is_dynamic:
+            badge = '<div style="background:#e65100;color:#fff;padding:6px 12px;border-radius:6px;text-align:center;font-weight:700;margin-bottom:8px">🔍 자동포착 (급등/거래량급증)</div>'
+        elif esig >= 3:
             badge = '<div style="background:#1565c0;color:#fff;padding:6px 12px;border-radius:6px;text-align:center;font-weight:700;margin-bottom:8px">🎯 진입 신호</div>'
 
         return f"""
@@ -1060,10 +1110,10 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
           <div style="font-size:22px;font-weight:700">${fmt(price,2)}</div>
           <div style="margin:4px 0">{change_span(chg)}</div>
           <hr style="border-color:#333;margin:8px 0">
-          <div class="stock-row"><span title="{TOOLTIP_RSI}" style="cursor:help;border-bottom:1px dotted #666">RSI(14) ℹ</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}{rsi_label}</span></div>
-          <div class="stock-row"><span title="{TOOLTIP_MACD}" style="cursor:help;border-bottom:1px dotted #666">MACD 골든크로스 ℹ</span><span style="color:{'#4caf50' if macd_gc else '#f44336'}">{'✓ 발생' if macd_gc else '미발생'}</span></div>
-          <div class="stock-row"><span title="{TOOLTIP_BB}" style="cursor:help;border-bottom:1px dotted #666">볼린저 하단 터치 ℹ</span><span style="color:{'#4caf50' if bb_touch else '#ccc'}">{'✓ 터치' if bb_touch else '미터치'}</span></div>
-          <div class="stock-row"><span title="{TOOLTIP_MA}" style="cursor:help;border-bottom:1px dotted #666">200MA 대비 ℹ</span><span style="color:{vs200_color}">{vs200}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_RSI}" onclick="showTooltip(this.title)">RSI(14) ℹ</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}{rsi_label}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_MACD}" onclick="showTooltip(this.title)">MACD 골든크로스 ℹ</span><span style="color:{'#4caf50' if macd_gc else '#f44336'}">{'✓ 발생' if macd_gc else '미발생'}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_BB}" onclick="showTooltip(this.title)">볼린저 하단 터치 ℹ</span><span style="color:{'#4caf50' if bb_touch else '#ccc'}">{'✓ 터치' if bb_touch else '미터치'}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_MA}" onclick="showTooltip(this.title)">200MA 대비 ℹ</span><span style="color:{vs200_color}">{vs200}</span></div>
           <div class="stock-row"><span>거래량 비율</span><span style="color:{'#ff9800' if vol_surge else '#ccc'}">{fmt(vol,2,"x")}{' 🔥급증' if vol_surge else ''}</span></div>
           <hr style="border-color:#333;margin:8px 0">
           <div class="stock-row"><span>매수선</span><span style="color:#4caf50">${fmt(buy,2)}</span></div>
@@ -1117,13 +1167,13 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
           <div style="font-size:22px;font-weight:700">{price_fmt}</div>
           <div style="margin:4px 0">{change_span(chg)}</div>
           <hr style="border-color:#333;margin:8px 0">
-          <div class="stock-row"><span title="{TOOLTIP_RSI}" style="cursor:help;border-bottom:1px dotted #666">RSI(14) ℹ</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}{rsi_label}</span></div>
-          <div class="stock-row"><span title="{TOOLTIP_MACD}" style="cursor:help;border-bottom:1px dotted #666">MACD 골든크로스 ℹ</span><span style="color:{'#4caf50' if macd_gc else '#f44336'}">{'✓ 발생' if macd_gc else '미발생'}</span></div>
-          <div class="stock-row"><span title="{TOOLTIP_BB}" style="cursor:help;border-bottom:1px dotted #666">볼린저 하단 터치 ℹ</span><span style="color:{'#4caf50' if bb_touch else '#ccc'}">{'✓ 터치' if bb_touch else '미터치'}</span></div>
-          <div class="stock-row"><span title="{TOOLTIP_MA}" style="cursor:help;border-bottom:1px dotted #666">200MA 대비 ℹ</span><span style="color:{vs200_color}">{vs200}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_RSI}" onclick="showTooltip(this.title)">RSI(14) ℹ</span><span style="color:{rsi_color};font-weight:600">{fmt(rsi,1)}{rsi_label}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_MACD}" onclick="showTooltip(this.title)">MACD 골든크로스 ℹ</span><span style="color:{'#4caf50' if macd_gc else '#f44336'}">{'✓ 발생' if macd_gc else '미발생'}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_BB}" onclick="showTooltip(this.title)">볼린저 하단 터치 ℹ</span><span style="color:{'#4caf50' if bb_touch else '#ccc'}">{'✓ 터치' if bb_touch else '미터치'}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="{TOOLTIP_MA}" onclick="showTooltip(this.title)">200MA 대비 ℹ</span><span style="color:{vs200_color}">{vs200}</span></div>
           <div class="stock-row"><span>거래량 비율</span><span style="color:{'#ff9800' if vol_surge else '#ccc'}">{fmt(vol,2,"x")}{' 🔥급증' if vol_surge else ''}</span></div>
-          <div class="stock-row"><span>기관 3일 순매수</span><span style="color:{'#4caf50' if inst else '#ccc'}">{'✓ 3일 연속' if inst else '아니오'}</span></div>
-          <div class="stock-row"><span>외국인 3일 순매수</span><span style="color:{'#4caf50' if for_ else '#ccc'}">{'✓ 3일 연속' if for_ else '아니오'}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="KRX 공식 거래소 데이터(pykrx) 기반. 최근 3거래일 연속 기관 순매수(매수-매도&gt;0) 여부" onclick="showTooltip(this.title)">기관 3일 순매수 ℹ</span><span style="color:{'#4caf50' if inst else '#ccc'}">{'✓ 3일 연속' if inst else '아니오'}</span></div>
+          <div class="stock-row"><span class="tip-lbl" title="KRX 공식 거래소 데이터(pykrx) 기반. 최근 3거래일 연속 외국인 순매수(매수-매도&gt;0) 여부" onclick="showTooltip(this.title)">외국인 3일 순매수 ℹ</span><span style="color:{'#4caf50' if for_ else '#ccc'}">{'✓ 3일 연속' if for_ else '아니오'}</span></div>
           <hr style="border-color:#333;margin:8px 0">
           <div class="stock-row"><span>매수선</span><span style="color:#4caf50">{buy_fmt}</span></div>
           <div class="stock-row"><span>손절선</span><span style="color:#ff9800">{stop_fmt}</span></div>
@@ -1247,6 +1297,43 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
     border-bottom: 2px solid var(--border);
   }}
 
+  /* ── 툴팁 라벨 ── */
+  .tip-lbl {{
+    cursor: pointer;
+    border-bottom: 1px dotted #666;
+    user-select: none;
+  }}
+  /* ── 툴팁 모달 ── */
+  #tooltip-modal {{
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #1e1e1e;
+    border-top: 2px solid #90caf9;
+    padding: 16px 20px 24px;
+    z-index: 500;
+    flex-direction: column;
+    align-items: flex-start;
+  }}
+  #tooltip-modal p {{
+    color: #e0e0e0;
+    font-size: 14px;
+    line-height: 1.7;
+    margin-bottom: 12px;
+  }}
+  #tooltip-modal button {{
+    background: #333;
+    border: none;
+    color: #90caf9;
+    padding: 8px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    align-self: flex-end;
+  }}
+
   /* ── 업데이트 시각 ── */
   .update-bar {{
     background: var(--surface2);
@@ -1311,6 +1398,12 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
 
 <!-- 탭 1: 거시경제 개요 -->
 <div class="tab-panel active" id="tab0">
+  <div style="background:#1a2200;border-left:4px solid #ff9800;padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:13px;line-height:1.7">
+    📡 <b>뉴스 노이즈 vs 시그널 판단 기준</b><br>
+    ① 지표가 <b>예상치 대비 크게 벗어났는가?</b> (ex. CPI 예상 2.5% → 실제 3.1%) — 시그널<br>
+    ② <b>Fed 위원 직접 발언</b>인가 vs 언론 해석인가? — 직접 발언이 시그널<br>
+    ③ 증시가 <b>3일 이상 같은 방향으로 반응</b>하는가? — 시그널. 1일 급등락은 노이즈 가능성 높음
+  </div>
   <div class="score-grid">
     <div class="score-card">
       <div class="score-title">단기 점수 (심리·모멘텀)</div>
@@ -1341,8 +1434,11 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
 
 <!-- 탭 3: 단타 종목 (미국) -->
 <div class="tab-panel" id="tab2">
-  <p style="color:var(--text-sub);font-size:13px;margin-bottom:16px">
+  <p style="color:var(--text-sub);font-size:13px;margin-bottom:8px">
     ※ 기술적 신호 3개 이상 충족 시 🎯 진입 신호 배지 표시
+  </p>
+  <p style="color:#ff9800;font-size:13px;margin-bottom:16px">
+    🔍 거래량 2.5배↑ 또는 당일 ±5%↑ 종목은 워치리스트에서 <b>자동포착</b>되어 표시됩니다
   </p>
   {html_us_scalp}
 </div>
@@ -1355,6 +1451,12 @@ def generate_html(macro: dict, scores: dict, sectors: dict, us_scalp: list, kr_s
   {html_kr_scalp}
 </div>
 
+<!-- 모바일 툴팁 모달 -->
+<div id="tooltip-modal">
+  <p id="tooltip-text"></p>
+  <button onclick="closeTooltip()">닫기</button>
+</div>
+
 <script>
 function switchTab(idx) {{
   document.querySelectorAll('.tab-panel').forEach((p, i) => {{
@@ -1364,6 +1466,43 @@ function switchTab(idx) {{
     b.classList.toggle('active', i === idx);
   }});
 }}
+
+function showTooltip(text) {{
+  document.getElementById('tooltip-text').textContent = text;
+  document.getElementById('tooltip-modal').style.display = 'flex';
+}}
+
+function closeTooltip() {{
+  document.getElementById('tooltip-modal').style.display = 'none';
+}}
+
+// 섹터 접힘/펼침
+function toggleSector(el) {{
+  const grid = el.nextElementSibling;
+  const isOpen = grid.style.display !== 'none';
+  grid.style.display = isOpen ? 'none' : 'grid';
+  el.querySelector('.sector-toggle').textContent = isOpen ? '▶' : '▼';
+}}
+
+// 섹터 종목 검색
+function filterSectors(q) {{
+  q = q.toLowerCase();
+  document.querySelectorAll('#tab1 .stock-card').forEach(card => {{
+    card.style.display = (!q || card.textContent.toLowerCase().includes(q)) ? '' : 'none';
+  }});
+  // 섹터 제목 숨김 처리: 해당 그리드 내 카드가 모두 숨겨지면 제목도 숨김
+  document.querySelectorAll('#tab1 .card-grid').forEach(grid => {{
+    const title = grid.previousElementSibling;
+    const anyVisible = [...grid.querySelectorAll('.stock-card')].some(c => c.style.display !== 'none');
+    if (title) title.style.display = anyVisible ? '' : 'none';
+    grid.style.display = anyVisible ? 'grid' : 'none';
+  }});
+}}
+
+// 배경 클릭 시 모달 닫기
+document.getElementById('tooltip-modal').addEventListener('click', function(e) {{
+  if (e.target === this) closeTooltip();
+}});
 </script>
 </body>
 </html>"""
